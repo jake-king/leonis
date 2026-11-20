@@ -15,12 +15,21 @@ adb=${ADB:-${ANDROID_HOME:-$HOME/Android/Sdk}/platform-tools/adb}
 
 "$adb" install -r "$apk" >/dev/null
 
+# Prints which window has focus and which activity is resumed: what owns the foreground.
+foreground() {
+  echo "  foreground ($1):"
+  "$adb" shell dumpsys window | grep -E 'mCurrentFocus|mFocusedApp' | sed 's/^ */    /' | head -4
+  "$adb" shell dumpsys activity activities | grep -E 'topResumedActivity|ResumedActivity:' \
+    | sed 's/^ */    /' | head -3
+}
+
 # Runs the probe once with the given mode; prints its result line; returns the probe's exit code
 # (2 if no verdict appeared within the timeout).
 run() {
   local mode=$1 save=${2:-}
   "$adb" logcat -c
   "$adb" shell setprop debug.leonis.p5 "${mode:-\'\'}"
+  foreground "before launch, mode '${mode}'"
   "$adb" shell am start -S -n org.leonis.p5/org.libsdl.app.SDLActivity >/dev/null
   if [ -n "$save" ]; then
     # Screenshot only once the probe has presented: a fixed delay caught the launch animation on CI.
@@ -28,8 +37,16 @@ run() {
       "$adb" logcat -d -s leonis:I | grep -q 'p5 first_frame' && break
       sleep 0.5
     done
-    sleep 0.5
-    "$adb" exec-out screencap -p > "$save"
+    # First-frame is not on-screen yet: Android may still be animating the launch and the rotation.
+    # The probe draws its colour on every frame, so take screenshots until one shows it (10 tries,
+    # 0.5 s apart, while the probe runs); the check after the runs fails if none did.
+    local try
+    for try in $(seq 1 10); do
+      sleep 0.5
+      "$adb" exec-out screencap -p > "$save"
+      python3 -I "$(dirname "$0")/screen_pixel.py" "$save" 0,188,255 >/dev/null 2>&1 && break
+    done
+    echo "  screenshot: try $try of 10"
   fi
   local log=""
   for _ in $(seq 1 45); do
@@ -43,7 +60,11 @@ run() {
   local code
   code=$(grep -oE 'p5 exit=[0-9]+' <<<"$log" | tail -1 | cut -d= -f2)
   if [ -z "$code" ]; then
-    echo "run-on-device: no verdict from mode '${mode}' in 90 s; crash lines:" >&2
+    echo "run-on-device: no verdict from mode '${mode}' in 90 s" >&2
+    foreground "at timeout" >&2
+    "$adb" logcat -d | grep -iE 'ActivityTaskManager|ActivityManager: (Start|Kill|Process)|ANR|not responding' \
+      | sed -E 's/^.{18}/  am: /' | tail -25 >&2 || true
+    echo "  crash lines:" >&2
     "$adb" logcat -d | grep -E 'FATAL|AndroidRuntime|DEBUG   :' | head -20 >&2 || true
     return 2
   fi
