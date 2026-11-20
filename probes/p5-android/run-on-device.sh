@@ -13,28 +13,34 @@ adb=${ADB:-${ANDROID_HOME:-$HOME/Android/Sdk}/platform-tools/adb}
 [ -f "$apk" ] || { echo "run-on-device: no APK at $apk" >&2; exit 2; }
 [ "$("$adb" get-state 2>/dev/null)" = device ] || { echo "run-on-device: no device" >&2; exit 2; }
 
-# Right after boot Android keeps changing configuration (resource overlays are applied on user
-# unlock, after sys.boot_completed): a CONFIG_ASSETS_PATHS change relaunches the activity, and SDL3
-# does not survive a relaunch (docs/probes/p5.md). Wait until no configuration change has been
-# logged for 10 s, up to 120 s.
+# Right after boot an emulator is not ready even when sys.boot_completed=1 (docs/probes/p5.md):
+# - resource overlays are still applied on user unlock; each is a CONFIG_ASSETS_PATHS change that
+#   relaunches the activity, and SDL3 does not survive a relaunch;
+# - System UI can be starved for CPU and show "System UI isn't responding", covering the app.
+# Settled means: no configuration change logged for 10 s AND the launcher has held focus, with no
+# "not responding" dialog, for 10 s. Up to 180 s.
+focus() { "$adb" shell dumpsys window | grep -o 'mCurrentFocus=.*' | head -1; }
 settle() {
-  local waited=0 now last
-  while [ "$waited" -lt 120 ]; do
+  local waited=0 now last f calm=0
+  while [ "$waited" -lt 180 ]; do
     now=$("$adb" shell date +%s | tr -d '\r')
     last=$("$adb" logcat -d -v epoch -s ActivityTaskManager:I | grep 'Config changes=' | tail -1 \
       | awk '{print int($1)}')
-    if [ -z "$last" ] || [ $((now - last)) -ge 10 ]; then
-      if [ -n "$last" ]; then
-        echo "  settled: last configuration change $((now - last)) s ago, waited ${waited} s"
-      else
-        echo "  settled: no configuration change logged, waited ${waited} s"
-      fi
+    f=$(focus)
+    if [[ "$f" == *launcher* ]] && [[ "$f" != *"Not Responding"* ]]; then
+      calm=$((calm + 2))
+    else
+      [ "$calm" -gt 0 ] && echo "  settle: focus left the launcher: $f"
+      calm=0
+    fi
+    if { [ -z "$last" ] || [ $((now - last)) -ge 10 ]; } && [ "$calm" -ge 10 ]; then
+      echo "  settled: last configuration change ${last:+$((now - last)) s ago}, launcher focused ${calm} s, waited ${waited} s"
       return 0
     fi
     sleep 2
     waited=$((waited + 2))
   done
-  echo "run-on-device: configuration still changing after 120 s" >&2
+  echo "run-on-device: not settled after 180 s (focus: $(focus))" >&2
   return 2
 }
 
@@ -73,6 +79,7 @@ run() {
       python3 -I "$(dirname "$0")/screen_pixel.py" "$save" 0,188,255 >/dev/null 2>&1 && break
     done
     echo "  screenshot: try $try of 10"
+    shot_focus=$(focus)
   fi
   local log=""
   for _ in $(seq 1 45); do
@@ -108,9 +115,20 @@ run plant-wrong-colour; control=$?
 set -e
 echo "probe exit=$probe control exit=$control"
 if [ -n "$shot" ]; then
-  # The screenshot is evidence only if it shows the probe's colour; a mistimed one fails the run.
+  # The screenshot is evidence only if it shows the probe's colour. If a system "not responding"
+  # dialog covered the screen, the run never had a fair chance: exit 2 (could not run), named.
   python3 -I "$(dirname "$0")/screen_pixel.py" "$shot" 0,188,255 || screen=$?
-  [ "${screen:-0}" -eq 0 ] || { echo "run-on-device: screenshot does not show the probe's colour" >&2; exit 1; }
+  if [ "${screen:-0}" -ne 0 ]; then
+    # Classified from the focused window at the last screenshot (the name seen in CI's output:
+    # "Application Not Responding: com.android.systemui").
+    echo "  focus at the last screenshot: ${shot_focus:-unknown}" >&2
+    if [[ "${shot_focus:-}" == *"Not Responding"* ]]; then
+      echo "run-on-device: screenshot covered: System UI was not responding (emulator starved); could not run" >&2
+      exit 2
+    fi
+    echo "run-on-device: screenshot does not show the probe's colour" >&2
+    exit 1
+  fi
 fi
 [ "$probe" -eq 2 ] || [ "$control" -eq 2 ] && exit 2
 [ "$probe" -eq 0 ] && [ "$control" -eq 1 ]

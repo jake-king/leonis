@@ -15,6 +15,9 @@ use std::ffi::{CString, c_char, c_int};
 use std::time::Instant;
 
 const FRAMES: u32 = 300;
+/// Keep presenting at least this long, so a screenshot taken after the launch animation and the
+/// rotation still finds the probe on screen (300 frames took ~1.5 s on the emulator).
+const MIN_RUN: std::time::Duration = std::time::Duration::from_secs(6);
 const CLEAR: wgpu::Color = wgpu::Color { r: 0.0, g: 0.5, b: 1.0, a: 1.0 };
 
 #[link(name = "log")]
@@ -96,8 +99,18 @@ fn run(plant: bool) -> Result<bool, String> {
     }))
     .map_err(|e| format!("adapter: {e}"))?;
     let info = adapter.get_info();
-    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
-        .map_err(|e| format!("device: {e}"))?;
+    let limits = adapter.limits();
+    log(&format!(
+        "p5 adapter backend={:?} adapter={:?} device_type={:?} max_texture_2d={} max_compute_workgroups_per_dimension={}",
+        info.backend, info.name, info.device_type, limits.max_texture_dimension_2d, limits.max_compute_workgroups_per_dimension
+    ));
+    // Ask for what this adapter supports, not wgpu's desktop defaults: CI's emulator once reported an
+    // adapter with no compute (max_compute_workgroups_per_dimension 0), and the defaults refused it.
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        required_limits: limits,
+        ..Default::default()
+    }))
+    .map_err(|e| format!("device: {e}"))?;
 
     let (w, h) = window.size_in_pixels();
     let mut config = surface
@@ -112,12 +125,16 @@ fn run(plant: bool) -> Result<bool, String> {
     let mut events = sdl.event_pump().map_err(|e| format!("event pump: {e}"))?;
     let (mut presented, mut skipped, mut occluded, mut reconfigures) = (0u32, 0u32, 0u32, 0u32);
     let start = Instant::now();
-    'frames: for _ in 0..FRAMES {
+    let mut quit = false;
+    let mut frames = 0u32;
+    'frames: while frames < FRAMES || start.elapsed() < MIN_RUN {
+        frames += 1;
         for event in events.poll_iter() {
             use sdl3::event::{Event, WindowEvent};
             match event {
                 Event::Quit { .. } => {
                     log("p5 event=quit");
+                    quit = true;
                     break 'frames;
                 }
                 Event::Window { win_event: WindowEvent::PixelSizeChanged(nw, nh), .. } => {
@@ -166,9 +183,9 @@ fn run(plant: bool) -> Result<bool, String> {
     let readback_colour = if plant { wgpu::Color::RED } else { CLEAR };
     let pixel = readback(&device, &queue, config.format, readback_colour)?;
     let expected = expected_pixel(config.format);
-    let pass = presented > 0 && presented + skipped + occluded == FRAMES && pixel_close(pixel, expected);
+    let pass = !quit && presented > 0 && presented + skipped + occluded == frames && pixel_close(pixel, expected);
     log(&format!(
-        "p5 result={} plant={plant} frames={FRAMES} presented={presented} skipped={skipped} occluded={occluded} \
+        "p5 result={} plant={plant} frames={frames} quit={quit} presented={presented} skipped={skipped} occluded={occluded} \
          reconfigures={reconfigures} pixel={pixel:?} expected={expected:?} ms={}",
         if pass { "pass" } else { "fail" },
         elapsed.as_millis()
