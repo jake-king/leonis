@@ -1,0 +1,92 @@
+name: p5
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+        working-directory: probes/p5-android
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust Android targets
+        run: rustup target add x86_64-linux-android aarch64-linux-android
+      - name: Android SDK packages (same versions as the dev box)
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install \
+            "platform-tools" "emulator" "platforms;android-36" "build-tools;36.1.0" \
+            "ndk;29.0.14206865" "system-images;android-36;default;x86_64" >/dev/null
+      - name: Build APKs (arm64 for devices, x86_64 for the emulator)
+        run: |
+          ./build-apk.sh arm64-v8a
+          ./build-apk.sh x86_64
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      # The plain AOSP image: google_apis runs Play services' first-boot setup activity, which took
+      # the foreground mid-run and backgrounded the probe (docs/probes/p5.md).
+      - name: Emulator version (part of the snapshot cache key)
+        id: emu
+        run: |
+          # From the package metadata: `emulator -version` starts QEMU, which needs libpulse (absent on
+          # the runner; real runs pass -no-audio and never load it).
+          v=$(sed -n 's/^Pkg.Revision=//p' "$ANDROID_HOME/emulator/source.properties")
+          [ -n "$v" ] || { echo "no emulator version"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      # Runs never start from a cold boot: a cold boot relaunches the activity (overlays) and can leave
+      # "System UI isn't responding" up (docs/probes/p5.md). emulator.sh prepares an idle, clean
+      # snapshot once; the cache keeps it between runs. Saved only when the job succeeds.
+      - name: Restore the AVD and its idle snapshot
+        id: avd
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/avd
+          key: p5-avd-api36-default-x86_64-emu${{ steps.emu.outputs.version }}-swiftshader-mem3072-v1
+      - name: Prepare the AVD and its snapshot (cache miss)
+        if: steps.avd.outputs.cache-hit != 'true'
+        env:
+          ANDROID_AVD_HOME: ${{ runner.temp }}/avd
+          EMULATOR_LOG: ${{ runner.temp }}/emulator.log
+        run: |
+          mkdir -p "$ANDROID_AVD_HOME"
+          "$ANDROID_HOME/emulator/emulator" -accel-check
+          echo no | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd -n leonis-api36 \
+            -k "system-images;android-36;default;x86_64" -d pixel_7 --force
+          "$ANDROID_HOME/emulator/emulator" -list-avds | grep -qx leonis-api36 \
+            || { echo "AVD not visible to the emulator"; ls -la "$ANDROID_AVD_HOME"; exit 1; }
+          ./emulator.sh prepare leonis-api36
+      - name: Start the emulator from the snapshot
+        env:
+          ANDROID_AVD_HOME: ${{ runner.temp }}/avd
+          EMULATOR_LOG: ${{ runner.temp }}/emulator.log
+        run: |
+          echo "cache hit: ${{ steps.avd.outputs.cache-hit }}"
+          # A snapshot that will not start (e.g. an emulator update the key did not catch) is prepared
+          # again rather than failing the run.
+          ./emulator.sh start leonis-api36 || {
+            echo "start from the snapshot failed; preparing it again"
+            ./emulator.sh prepare leonis-api36
+            ./emulator.sh start leonis-api36
+          }
+      - name: Run P5 and its negative control
+        run: ./run-on-device.sh build/x86_64/p5.apk p5-android-emulator.png
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: p5-android
+          path: probes/p5-android/p5-android-emulator.png
+          if-no-files-found: ignore
