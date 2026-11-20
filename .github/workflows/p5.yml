@@ -12,7 +12,7 @@ permissions:
 jobs:
   android:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     defaults:
       run:
         shell: bash
@@ -39,17 +39,26 @@ jobs:
           sudo udevadm trigger --name-match=kvm
       - name: Boot the emulator (SwiftShader, no window)
         run: |
+          "$ANDROID_HOME/emulator/emulator" -accel-check
           echo no | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd -n leonis-api36 \
             -k "system-images;android-36;google_apis;x86_64" -d pixel_7 --force
+          log="$RUNNER_TEMP/emulator.log"
           nohup "$ANDROID_HOME/emulator/emulator" -avd leonis-api36 -no-window -gpu swiftshader_indirect \
-            -no-snapshot -no-audio -no-boot-anim -memory 3072 > "$RUNNER_TEMP/emulator.log" 2>&1 &
+            -no-snapshot -no-audio -no-boot-anim -memory 3072 > "$log" 2>&1 &
+          emu=$!
           adb="$ANDROID_HOME/platform-tools/adb"
-          timeout 300 "$adb" wait-for-device
-          for _ in $(seq 1 90); do
-            [ "$("$adb" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = 1 ] && exit 0
-            sleep 4
+          "$adb" start-server
+          # Poll instead of `adb wait-for-device`, so a dead emulator fails fast and its log is shown.
+          for i in $(seq 1 120); do
+            if ! kill -0 "$emu" 2>/dev/null; then
+              echo "emulator exited after ~$((i * 5)) s"; tail -80 "$log"; exit 1
+            fi
+            if [ "$("$adb" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = 1 ]; then
+              echo "booted after ~$((i * 5)) s"; exit 0
+            fi
+            sleep 5
           done
-          echo "emulator did not finish booting"; tail -50 "$RUNNER_TEMP/emulator.log"; exit 1
+          echo "emulator did not finish booting in 600 s"; "$adb" devices; tail -80 "$log"; exit 1
       - name: Run P5 and its negative control
         run: ./run-on-device.sh build/x86_64/p5.apk p5-android-emulator.png
       - uses: actions/upload-artifact@v4
