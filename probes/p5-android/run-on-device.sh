@@ -13,6 +13,32 @@ adb=${ADB:-${ANDROID_HOME:-$HOME/Android/Sdk}/platform-tools/adb}
 [ -f "$apk" ] || { echo "run-on-device: no APK at $apk" >&2; exit 2; }
 [ "$("$adb" get-state 2>/dev/null)" = device ] || { echo "run-on-device: no device" >&2; exit 2; }
 
+# Right after boot Android keeps changing configuration (resource overlays are applied on user
+# unlock, after sys.boot_completed): a CONFIG_ASSETS_PATHS change relaunches the activity, and SDL3
+# does not survive a relaunch (docs/probes/p5.md). Wait until no configuration change has been
+# logged for 10 s, up to 120 s.
+settle() {
+  local waited=0 now last
+  while [ "$waited" -lt 120 ]; do
+    now=$("$adb" shell date +%s | tr -d '\r')
+    last=$("$adb" logcat -d -v epoch -s ActivityTaskManager:I | grep 'Config changes=' | tail -1 \
+      | awk '{print int($1)}')
+    if [ -z "$last" ] || [ $((now - last)) -ge 10 ]; then
+      if [ -n "$last" ]; then
+        echo "  settled: last configuration change $((now - last)) s ago, waited ${waited} s"
+      else
+        echo "  settled: no configuration change logged, waited ${waited} s"
+      fi
+      return 0
+    fi
+    sleep 2
+    waited=$((waited + 2))
+  done
+  echo "run-on-device: configuration still changing after 120 s" >&2
+  return 2
+}
+
+settle || exit 2
 "$adb" install -r "$apk" >/dev/null
 
 # Prints which window has focus and which activity is resumed: what owns the foreground.
@@ -61,8 +87,13 @@ run() {
   code=$(grep -oE 'p5 exit=[0-9]+' <<<"$log" | tail -1 | cut -d= -f2)
   if [ -z "$code" ]; then
     echo "run-on-device: no verdict from mode '${mode}' in 90 s" >&2
+    "$adb" logcat -d > "${LOGCAT_DIR:-.}/logcat-timeout-${mode:-normal}.txt" 2>&1 || true
+    echo "  full logcat saved to ${LOGCAT_DIR:-.}/logcat-timeout-${mode:-normal}.txt" >&2
     foreground "at timeout" >&2
-    "$adb" logcat -d | grep -iE 'ActivityTaskManager|ActivityManager: (Start|Kill|Process)|ANR|not responding' \
+    if "$adb" logcat -d | grep -q 'org.leonis.p5/org.libsdl.app.SDLActivity.* is relaunching'; then
+      echo "  the probe's activity was RELAUNCHED (a configuration change): SDL3 does not survive that" >&2
+    fi
+    "$adb" logcat -d | grep -E 'ActivityTaskManager|ActivityManager: (Start|Kill|Process)|\bANR\b|not responding' \
       | sed -E 's/^.{18}/  am: /' | tail -25 >&2 || true
     echo "  crash lines:" >&2
     "$adb" logcat -d | grep -E 'FATAL|AndroidRuntime|DEBUG   :' | head -20 >&2 || true

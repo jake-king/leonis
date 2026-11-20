@@ -50,6 +50,8 @@ fn property(name: &str) -> String {
 /// Called by SDL with a valid argc/argv pair; neither is read.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn SDL_main(_argc: c_int, _argv: *mut *mut c_char) -> c_int {
+    // On Android stderr goes nowhere: send panic messages (with their location) to logcat.
+    std::panic::set_hook(Box::new(|info| log(&format!("p5 panic: {info}"))));
     let plant = property("debug.leonis.p5") == "plant-wrong-colour";
     match std::panic::catch_unwind(|| run(plant)) {
         Ok(Ok(true)) => {

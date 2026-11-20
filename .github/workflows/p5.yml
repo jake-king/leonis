@@ -26,7 +26,7 @@ jobs:
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install \
             "platform-tools" "emulator" "platforms;android-36" "build-tools;36.1.0" \
-            "ndk;29.0.14206865" "system-images;android-36;google_apis;x86_64" >/dev/null
+            "ndk;29.0.14206865" "system-images;android-36;default;x86_64" >/dev/null
       - name: Build APKs (arm64 for devices, x86_64 for the emulator)
         run: |
           ./build-apk.sh arm64-v8a
@@ -37,6 +37,8 @@ jobs:
             | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
+      # The plain AOSP image: google_apis runs Play services' first-boot setup activity, which took
+      # the foreground mid-run and backgrounded the probe (docs/probes/p5.md).
       - name: Boot the emulator (SwiftShader, no window)
         run: |
           # avdmanager and the emulator must agree on where AVDs live; the runner's defaults do not.
@@ -44,7 +46,7 @@ jobs:
           mkdir -p "$ANDROID_AVD_HOME"
           "$ANDROID_HOME/emulator/emulator" -accel-check
           echo no | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd -n leonis-api36 \
-            -k "system-images;android-36;google_apis;x86_64" -d pixel_7 --force
+            -k "system-images;android-36;default;x86_64" -d pixel_7 --force
           "$ANDROID_HOME/emulator/emulator" -list-avds | grep -qx leonis-api36 \
             || { echo "AVD not visible to the emulator"; ls -la "$ANDROID_AVD_HOME"; exit 1; }
           log="$RUNNER_TEMP/emulator.log"
