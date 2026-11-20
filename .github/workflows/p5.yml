@@ -42,7 +42,9 @@ jobs:
       - name: Emulator version (part of the snapshot cache key)
         id: emu
         run: |
-          v=$("$ANDROID_HOME/emulator/emulator" -version | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+          # From the package metadata: `emulator -version` starts QEMU, which needs libpulse (absent on
+          # the runner; real runs pass -no-audio and never load it).
+          v=$(sed -n 's/^Pkg.Revision=//p' "$ANDROID_HOME/emulator/source.properties")
           [ -n "$v" ] || { echo "no emulator version"; exit 1; }
           echo "version=$v" >> "$GITHUB_OUTPUT"
       # Runs never start from a cold boot: a cold boot relaunches the activity (overlays) and can leave
