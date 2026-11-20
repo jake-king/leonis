@@ -27,7 +27,8 @@ uploads, determinism, cross-platform CI) proved.
 Decisions: [0001 stack](decisions/0001-rust-wgpu-sdl3.md) · [0002 hybrid UI](decisions/0002-hybrid-ui-model.md) ·
 [0003 accessibility tree as test selector](decisions/0003-accessibility-tree-is-the-test-selector.md) ·
 [0004 the CLI owns CI logic](decisions/0004-cli-owns-ci-logic.md) ·
-[0005 mobile is first-class](decisions/0005-mobile-is-first-class.md).
+[0005 mobile is first-class](decisions/0005-mobile-is-first-class.md) ·
+[0006 two-tier snapshots](decisions/0006-two-tier-snapshots.md).
 
 Prior art to read before M1: `fenestra` (crates.io, 0.41.0: winit + wgpu, flexbox/grid, headless PNG
 rendering, a verification-harness crate). `oriel` (crates.io) is an empty name reservation with a
@@ -96,11 +97,11 @@ rule both guile-2d and maps-tauri arrived at, because timer rounding makes "over
 - Given the same build and the same inputs (recorded input, injected clock, seeded RNG, taped network),
   the virtual platform produces the same retained tree and the same draw list, byte for byte, on
   Linux, macOS and Windows.
-- Pixels: on the software adapters (llvmpipe/lavapipe on Linux, WARP on Windows) the same draw list
-  produces the same pixels, exactly or within a measured per-snapshot tolerance. macOS has no software
-  adapter; its pixels are compared against Linux within a measured tolerance. The Android emulator
-  (SwiftShader) and the iOS simulator are compared against Linux the same way. "Same everywhere" for
-  pixels means exactly this, not more.
+- Pixels, in two tiers ([0006](decisions/0006-two-tier-snapshots.md)): the **exact tier** renders
+  baselines with lavapipe at a pinned Mesa version inside the pinned CI container and compares them byte
+  for byte. The **cross-platform tier** compares every other renderer (WARP, Metal, the Android emulator,
+  the iOS simulator, real GPUs) against the exact-tier baseline with a per-channel tolerance (max
+  difference ≤ 2/255, measured in P4). "Same everywhere" for pixels means exactly this, not more.
 
 ### Counters (exposed by the app driver and the debug socket in debug builds)
 `frames_drawn`, `nodes_rebuilt`, `draw_commands_rebuilt`, `missed_frames`, `inbox_items_applied`,
@@ -228,7 +229,7 @@ must make it fail before its first pass counts.
 | R3 | Only dirty nodes are rebuilt | Layer 2: changing one list row gives `nodes_rebuilt == 1` and `draw_commands_rebuilt` == that row's count | A planted "mark everything dirty" must fail | M2 |
 | R4 | Tree + draw list are deterministic | `leonis replay` of a fixed recording (≥ 600 frames, ≥ 50 distinct frame hashes required, else exit 2) hashes tree + draw list per frame; equal across two runs and across all five platforms (on mobile, replayed in the emulator and simulator) | An unseeded RNG and a HashMap-ordered child list, each planted, must change the hashes | M2 |
 | R5 | Bundled fonts by default | Layer 3 snapshot in a container with no system fonts equals the default snapshot | Opting into system fonts in that container must fail or differ | M1 |
-| R6 | Software-adapter pixels match within committed tolerances | `leonis snapshot compare` on Linux and Windows (and macOS vs Linux). `tests/snapshot-tolerance.toml`: every non-zero entry names the CI run that measured it; a lint fails entries without one | A one-block (8×8 px) colour change in a snapshot must fail at the committed tolerance | M1 |
+| R6 | Snapshots match in two tiers (ADR 0006) | Exact tier: `leonis snapshot compare` in the pinned container, byte-exact. Cross-platform tier: every other renderer vs the exact baseline, per-channel max diff within `tests/snapshot-tolerance.toml` (default 2); every entry names the CI run that measured it, and a lint fails entries without one. The pinned Mesa version is recorded beside the baselines; changing it requires re-baselining in the same commit | Exact tier: a planted one-pixel, one-unit change must fail. Cross-platform tier: a planted 3-unit change must fail at the default tolerance | M1 |
 | R7 | Every interactive built-in widget has a role + name | Layer 2 walks every built-in widget's accessibility node | A planted unnamed widget must fail | M2 |
 | R8 | Tests select by role + name | Layer 2 API `app.find(Role::Button, "Save")`; `internal_id_selector_uses` is printed in the test summary | Renaming the button must fail the test | M2 |
 | R9 | The accessibility tree reaches each platform | Layer 4: the sample app's tree read through UI Automation (Windows), AT-SPI (Linux), AX API (macOS), `uiautomator dump` (Android), XCUITest (iOS) matches the virtual-platform tree's roles + names | A widget whose name is dropped in the adapter must fail | M4 |
@@ -273,8 +274,8 @@ must make it fail before its first pass counts.
 ## Open questions
 - SDL3 Rust bindings: which crate (`sdl3` vs raw `sdl3-sys`) — decided by P1.
 - Text stack: parley vs cosmic-text — decided in M1 by a bidi/fallback/shaping test set.
-- macOS snapshots: compare against Linux within a tolerance (current plan) or keep a macOS baseline —
-  decided after the first M1 cross-platform run.
+- Text and the cross-platform tolerance: P4 had no glyphs. Re-measure in M1; if text needs more than
+  2/255, the change is a new measurement on record, not a silent bump (ADR 0006).
 - Desktop updater on mobile: none — app stores own updates. Whether to support Android sideload
   updates is open.
 - CI cost: iOS needs macOS runners and Android needs KVM-capable Linux runners for a usable emulator;
