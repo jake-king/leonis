@@ -1,0 +1,13 @@
+[package]
+name = "p1-sdl3-wgpu"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+sdl3 = { version = "0.22.1", features = ["raw-window-handle"] }
+wgpu = "30.0.2"
+pollster = "0.4"
+
+[workspace]
