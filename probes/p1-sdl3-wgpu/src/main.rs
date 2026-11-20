@@ -65,6 +65,8 @@ fn run(args: &Args) -> Result<bool, String> {
         .resizable()
         .build()
         .map_err(|e| format!("window: {e}"))?;
+    // macOS hosted runners report a new window as occluded unless it is brought to the front.
+    window.raise();
 
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
     // SAFETY: `window` outlives `surface`: both live until the end of this function and the
@@ -97,6 +99,7 @@ fn run(args: &Args) -> Result<bool, String> {
     let mut presented = 0u32;
     let mut reconfigures = 0u32;
     let mut skipped = 0u32;
+    let mut occluded = 0u32;
     let start = Instant::now();
     'frames: for frame in 0..args.frames {
         if frame == args.resize_at {
@@ -125,6 +128,12 @@ fn run(args: &Args) -> Result<bool, String> {
                 skipped += 1;
                 continue;
             }
+            // The window is not visible (covered, minimised, off-screen): nothing to draw this frame.
+            wgpu::CurrentSurfaceTexture::Occluded => {
+                occluded += 1;
+                std::thread::sleep(std::time::Duration::from_millis(16));
+                continue;
+            }
             other => return Err(format!("surface texture: {other:?}")),
         };
         let view = texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -137,13 +146,17 @@ fn run(args: &Args) -> Result<bool, String> {
     let readback_colour = if args.plant_wrong_colour { wgpu::Color::RED } else { CLEAR };
     let pixel = readback(&device, &queue, config.format, readback_colour)?;
     let expected = expected_pixel(config.format);
-    let pass = presented + skipped == args.frames
+    if presented == 0 && occluded > 0 {
+        println!("p1 result=occluded occluded={occluded} frames={}", args.frames);
+        return Err("window occluded for every frame: nothing was presented".into());
+    }
+    let pass = presented + skipped + occluded == args.frames
         && presented > 0
         && pixel_close(pixel, expected)
         && (args.resize_at >= args.frames || reconfigures > 0);
     println!(
         "p1 result={} driver={driver} backend={:?} adapter={:?} device_type={:?} format={:?} present_mode={:?} \
-         size={}x{} frames={} presented={presented} skipped={skipped} reconfigures={reconfigures} \
+         size={}x{} frames={} presented={presented} skipped={skipped} occluded={occluded} reconfigures={reconfigures} \
          pixel={pixel:?} expected={expected:?} ms={}",
         if pass { "pass" } else { "fail" },
         info.backend,
