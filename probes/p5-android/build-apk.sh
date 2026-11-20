@@ -33,7 +33,8 @@ target_env=$(echo "$TARGET" | tr 'a-z-' 'A-Z_')
 clang="$TC/${TARGET}${MIN_API}-clang"
 export "CARGO_TARGET_${target_env}_LINKER=$clang"
 export "CC_${TARGET//-/_}=$clang" "CXX_${TARGET//-/_}=${clang}++" "AR_${TARGET//-/_}=$TC/llvm-ar"
-export ANDROID_NDK=$NDK ANDROID_NDK_ROOT=$NDK
+# CI runners preset ANDROID_NDK_HOME to their own NDK; pin every name a tool might read.
+export ANDROID_NDK=$NDK ANDROID_NDK_ROOT=$NDK ANDROID_NDK_HOME=$NDK
 export CMAKE_TOOLCHAIN_FILE=$NDK/build/cmake/android.toolchain.cmake
 export ANDROID_PLATFORM=android-$MIN_API
 cargo build --locked --release --target "$TARGET"
@@ -42,7 +43,12 @@ out=build/$ABI
 rm -rf "$out" && mkdir -p "$out/stage/lib/$ABI" "$out/classes"
 cp "target/$TARGET/release/libmain.so" "$out/stage/lib/$ABI/"
 mapfile -t sdl < <(find "target/$TARGET/release/build" -path '*sdl3-sys-*/out/lib/libSDL3.so' -newer Cargo.toml)
-[ "${#sdl[@]}" -eq 1 ] || { echo "build-apk: expected one libSDL3.so, found ${#sdl[@]}: ${sdl[*]:-none}" >&2; exit 1; }
+if [ "${#sdl[@]}" -ne 1 ]; then
+  echo "build-apk: expected one libSDL3.so newer than Cargo.toml, found ${#sdl[@]}: ${sdl[*]:-none}" >&2
+  echo "build-apk: every libSDL3 under target/$TARGET (mtime, path); Cargo.toml mtime $(stat -c %y Cargo.toml):" >&2
+  find "target/$TARGET" -name 'libSDL3*' -not -path '*/CMakeFiles/*' -printf '  %TY-%Tm-%Td %TT %p\n' >&2
+  exit 1
+fi
 cp "${sdl[0]}" "$out/stage/lib/$ABI/"
 
 # --- Java: SDL's activity, compiled from SDL's source ------------------------------------------
