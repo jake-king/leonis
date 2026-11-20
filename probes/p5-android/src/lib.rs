@@ -154,6 +154,10 @@ fn run(plant: bool) -> Result<bool, String> {
         clear(&device, &queue, &view, CLEAR);
         queue.present(texture);
         presented += 1;
+        if presented == 1 {
+            // run-on-device.sh waits for this line before taking its screenshot.
+            log("p5 first_frame");
+        }
     }
     let elapsed = start.elapsed();
 

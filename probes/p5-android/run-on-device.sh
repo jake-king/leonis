@@ -23,7 +23,12 @@ run() {
   "$adb" shell setprop debug.leonis.p5 "${mode:-\'\'}"
   "$adb" shell am start -S -n org.leonis.p5/org.libsdl.app.SDLActivity >/dev/null
   if [ -n "$save" ]; then
-    sleep 1.2
+    # Screenshot only once the probe has presented: a fixed delay caught the launch animation on CI.
+    for _ in $(seq 1 60); do
+      "$adb" logcat -d -s leonis:I | grep -q 'p5 first_frame' && break
+      sleep 0.5
+    done
+    sleep 0.5
     "$adb" exec-out screencap -p > "$save"
   fi
   local log=""
@@ -48,5 +53,10 @@ run "" "$shot"; probe=$?
 run plant-wrong-colour; control=$?
 set -e
 echo "probe exit=$probe control exit=$control"
+if [ -n "$shot" ]; then
+  # The screenshot is evidence only if it shows the probe's colour; a mistimed one fails the run.
+  python3 -I "$(dirname "$0")/screen_pixel.py" "$shot" 0,188,255 || screen=$?
+  [ "${screen:-0}" -eq 0 ] || { echo "run-on-device: screenshot does not show the probe's colour" >&2; exit 1; }
+fi
 [ "$probe" -eq 2 ] || [ "$control" -eq 2 ] && exit 2
 [ "$probe" -eq 0 ] && [ "$control" -eq 1 ]
