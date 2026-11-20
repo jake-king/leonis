@@ -42,14 +42,15 @@ cargo build --locked --release --target "$TARGET"
 out=build/$ABI
 rm -rf "$out" && mkdir -p "$out/stage/lib/$ABI" "$out/classes"
 cp "target/$TARGET/release/libmain.so" "$out/stage/lib/$ABI/"
-mapfile -t sdl < <(find "target/$TARGET/release/build" -path '*sdl3-sys-*/out/lib/libSDL3.so' -newer Cargo.toml)
-if [ "${#sdl[@]}" -ne 1 ]; then
-  echo "build-apk: expected one libSDL3.so newer than Cargo.toml, found ${#sdl[@]}: ${sdl[*]:-none}" >&2
-  echo "build-apk: every libSDL3 under target/$TARGET (mtime, path); Cargo.toml mtime $(stat -c %y Cargo.toml):" >&2
+# sdl3-sys copies the shared library next to the build's artifacts; that path is the same across
+# cargo's build-directory layouts (CI's newer cargo uses build/sdl3-sys/<hash>/, not sdl3-sys-<hash>/).
+sdl=target/$TARGET/release/libSDL3.so
+if [ ! -f "$sdl" ] || [ ! "$sdl" -nt Cargo.toml ]; then
+  echo "build-apk: no fresh $sdl after the build; every libSDL3 under target/$TARGET (mtime, path):" >&2
   find "target/$TARGET" -name 'libSDL3*' -not -path '*/CMakeFiles/*' -printf '  %TY-%Tm-%Td %TT %p\n' >&2
   exit 1
 fi
-cp "${sdl[0]}" "$out/stage/lib/$ABI/"
+cp "$sdl" "$out/stage/lib/$ABI/"
 
 # --- Java: SDL's activity, compiled from SDL's source ------------------------------------------
 src=$(find "${CARGO_HOME:-$HOME/.cargo}/registry/src" -maxdepth 1 -mindepth 1 -type d -print0 \
