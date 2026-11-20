@@ -10,4 +10,8 @@ sdl3 = { version = "0.22.1", features = ["raw-window-handle"] }
 wgpu = "30.0.2"
 pollster = "0.4"
 
+[features]
+# CI: build SDL3 from source and link it statically (no system SDL3 package needed).
+vendored = ["sdl3/build-from-source-static"]
+
 [workspace]

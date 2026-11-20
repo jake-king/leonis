@@ -60,7 +60,7 @@ fn run(args: &Args) -> Result<bool, String> {
     let sdl = sdl3::init().map_err(|e| format!("sdl init: {e}"))?;
     let video = sdl.video().map_err(|e| format!("video init: {e}"))?;
     let driver = video.current_video_driver().to_string();
-    let window = video
+    let mut window = video
         .window("leonis P1", 640, 400)
         .resizable()
         .build()
@@ -68,7 +68,9 @@ fn run(args: &Args) -> Result<bool, String> {
 
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
     // SAFETY: `window` outlives `surface`: both live until the end of this function and the
-    // surface is declared after the window, so it is dropped first.
+    // surface is declared after the window, so it is dropped first. Never re-bind `window` below
+    // this point: a re-binding is a new local declared after `surface`, dropped BEFORE it (that
+    // was a use-after-free, a double free at exit on lavapipe; see docs/probes/p1.md).
     let surface = unsafe {
         let target = wgpu::SurfaceTargetUnsafe::from_display_and_window(&window, &window)
             .map_err(|e| format!("raw handle: {e}"))?;
@@ -92,7 +94,6 @@ fn run(args: &Args) -> Result<bool, String> {
     surface.configure(&device, &config);
 
     let mut events = sdl.event_pump().map_err(|e| format!("event pump: {e}"))?;
-    let mut window = window;
     let mut presented = 0u32;
     let mut reconfigures = 0u32;
     let mut skipped = 0u32;
