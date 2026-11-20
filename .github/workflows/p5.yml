@@ -1,0 +1,60 @@
+name: p5
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: probes/p5-android
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust Android targets
+        run: rustup target add x86_64-linux-android aarch64-linux-android
+      - name: Android SDK packages (same versions as the dev box)
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install \
+            "platform-tools" "emulator" "platforms;android-36" "build-tools;36.1.0" \
+            "ndk;29.0.14206865" "system-images;android-36;google_apis;x86_64" >/dev/null
+      - name: Build APKs (arm64 for devices, x86_64 for the emulator)
+        run: |
+          ./build-apk.sh arm64-v8a
+          ./build-apk.sh x86_64
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Boot the emulator (SwiftShader, no window)
+        run: |
+          echo no | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd -n leonis-api36 \
+            -k "system-images;android-36;google_apis;x86_64" -d pixel_7 --force
+          nohup "$ANDROID_HOME/emulator/emulator" -avd leonis-api36 -no-window -gpu swiftshader_indirect \
+            -no-snapshot -no-audio -no-boot-anim -memory 3072 > "$RUNNER_TEMP/emulator.log" 2>&1 &
+          adb="$ANDROID_HOME/platform-tools/adb"
+          timeout 300 "$adb" wait-for-device
+          for _ in $(seq 1 90); do
+            [ "$("$adb" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = 1 ] && exit 0
+            sleep 4
+          done
+          echo "emulator did not finish booting"; tail -50 "$RUNNER_TEMP/emulator.log"; exit 1
+      - name: Run P5 and its negative control
+        run: ./run-on-device.sh build/x86_64/p5.apk p5-android-emulator.png
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: p5-android
+          path: probes/p5-android/p5-android-emulator.png
+          if-no-files-found: ignore

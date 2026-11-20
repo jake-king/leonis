@@ -1,0 +1,19 @@
+[package]
+name = "p5-android"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[lib]
+# SDL's Java activity loads libSDL3.so, then libmain.so, and calls SDL_main in the last one.
+name = "main"
+crate-type = ["cdylib"]
+
+[dependencies]
+# SDL3 built from source as a shared library: libSDL3.so ships in the APK beside libmain.so.
+sdl3 = { version = "0.22.1", features = ["raw-window-handle", "build-from-source"] }
+wgpu = "30.0.2"
+pollster = "0.4"
+
+[workspace]
