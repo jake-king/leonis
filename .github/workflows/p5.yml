@@ -39,9 +39,14 @@ jobs:
           sudo udevadm trigger --name-match=kvm
       - name: Boot the emulator (SwiftShader, no window)
         run: |
+          # avdmanager and the emulator must agree on where AVDs live; the runner's defaults do not.
+          export ANDROID_AVD_HOME="$RUNNER_TEMP/avd"
+          mkdir -p "$ANDROID_AVD_HOME"
           "$ANDROID_HOME/emulator/emulator" -accel-check
           echo no | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd -n leonis-api36 \
             -k "system-images;android-36;google_apis;x86_64" -d pixel_7 --force
+          "$ANDROID_HOME/emulator/emulator" -list-avds | grep -qx leonis-api36 \
+            || { echo "AVD not visible to the emulator"; ls -la "$ANDROID_AVD_HOME"; exit 1; }
           log="$RUNNER_TEMP/emulator.log"
           nohup "$ANDROID_HOME/emulator/emulator" -avd leonis-api36 -no-window -gpu swiftshader_indirect \
             -no-snapshot -no-audio -no-boot-anim -memory 3072 > "$log" 2>&1 &
