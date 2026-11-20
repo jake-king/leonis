@@ -37,7 +37,9 @@ run() {
     grep -q 'p5 exit=' <<<"$log" && break
     sleep 2
   done
-  grep -E 'p5 (setup|result)' <<<"$log" | sed -E 's/^.*leonis *: //'
+  # Every line the probe logged (setup, lifecycle events, verdict) plus SDL's own lines.
+  grep -E 'p5 ' <<<"$log" | sed -E 's/^.*leonis *: //'
+  "$adb" logcat -d -s SDL:V SDL/APP:V SDLActivity:V | grep -viE 'beginning of' | sed -E 's/^.{18}/  sdl: /' | tail -25
   local code
   code=$(grep -oE 'p5 exit=[0-9]+' <<<"$log" | tail -1 | cut -d= -f2)
   if [ -z "$code" ]; then
