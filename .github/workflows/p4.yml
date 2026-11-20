@@ -1,0 +1,65 @@
+name: p4
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    name: render (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, name: linux-lavapipe, adapter: software }
+          - { os: windows-2025, name: windows-warp, adapter: software }
+          - { os: macos-15, name: macos-metal, adapter: any }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: probes/p4-software-parity
+    steps:
+      - uses: actions/checkout@v4
+      - name: lavapipe
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -q && sudo apt-get install -y -q mesa-vulkan-drivers
+      - name: Build
+        run: cargo build --locked
+      - name: Render twice (a software adapter must also agree with itself)
+        run: |
+          target/debug/p4-software-parity --adapter ${{ matrix.adapter }} --out ${{ matrix.name }}.png
+          target/debug/p4-software-parity --adapter ${{ matrix.adapter }} --out ${{ matrix.name }}-again.png
+          python3 -I compare.py ${{ matrix.name }}.png ${{ matrix.name }}-again.png
+      - uses: actions/upload-artifact@v4
+        with:
+          name: p4-${{ matrix.name }}
+          path: probes/p4-software-parity/${{ matrix.name }}.png
+
+  compare:
+    needs: render
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+        working-directory: probes/p4-software-parity
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: probes/p4-software-parity/renders
+          merge-multiple: true
+      - name: Compare every render against Linux lavapipe
+        run: |
+          python3 -I compare.py --selftest renders/linux-lavapipe.png
+          set +e
+          python3 -I compare.py renders/linux-lavapipe.png renders/windows-warp.png renders/macos-metal.png | tee -a "$GITHUB_STEP_SUMMARY"
+          rc=${PIPESTATUS[0]}
+          set -e
+          # P4 is a measurement: identical (0) or a measured difference (1) are both results; 2 is not.
+          [ "$rc" -ne 2 ]
